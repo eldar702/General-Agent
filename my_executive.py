@@ -44,10 +44,9 @@ class GeneralLearnerAgent(Executor):
 
     def initialize(self, services):
         self.services = services
-        self.create_new_state_action_data("debug_state")
-        self.data['debug_state']['actions'] = {"some_action": 45}
         self.make_actions_deterministic()
-        self.init_RMax_dict()
+        self.read_policies_files()
+
         self.new_pddl = cu_parsr.PDDL(self.services.parser)
 
         pass
@@ -59,10 +58,9 @@ class GeneralLearnerAgent(Executor):
         CURRENT_STATE = self.services.perception.get_state()
         last_state_hash, current_state_hash = helper.make_hash_sha256(LAST_STATE), helper.make_hash_sha256(CURRENT_STATE)
         chosen_action = None
-        self.update_Q_table(last_state_hash)
-        self.update_RMax_dict()
-   #     self.update_RMax_file()
+        self.update_Q_table(last_state_hash), self.update_RMax_dict()
         self.write_policies_files()
+
         r = np.random.uniform(0, 1)
         self.change_epsilon()
         if self.services.goal_tracking.reached_all_goals() and helper.minute_passed(0.1, TIMER):
@@ -88,6 +86,8 @@ class GeneralLearnerAgent(Executor):
         global policy_files_path
         helper.is_directory_exists(policy_files_folder_path)
         helper.save_dict_to_file(self.data, policy_files_path + "-Q-learning")  # save the Q-learning table as file
+        helper.save_dict_to_file(self.actions_count, policy_files_path + "-Rmax-count")  # save the actions count
+        helper.save_dict_to_file(self.actions_probs, policy_files_path + "-Rmax-prob")  # save the actions probabilities
 
         ####################             Q - LEARNING  Methods               #############################
     def choose_best_action(self, valid_Actions, state_hash):
@@ -144,7 +144,6 @@ class GeneralLearnerAgent(Executor):
     def init_RMax_dict(self):
         self.actions_count = helper.init_dict(self.deterministic_act_dict, 0)
         self.actions_probs = copy.deepcopy(self.actions_count)
-        pass
 
     def update_RMax_dict(self):
         global LAST_ACTION
@@ -152,7 +151,6 @@ class GeneralLearnerAgent(Executor):
 
         idx_of_happened_act = self.check_which_act_happened()
         if idx_of_happened_act is not None:
-      #      self.actions_count_dict[LAST_ACTION] += 1
             self.actions_count[LAST_ACTION][idx_of_happened_act] += 1
         self.calculate_probabilities()
 
@@ -183,6 +181,20 @@ class GeneralLearnerAgent(Executor):
                 else: self.actions_probs[action_name][idx] = 0
 
     ##############################             Helpers  Methods               #################################
+    def read_policies_files(self):
+        global policy_files_path
+        rmax_prob, rmax_count = (policy_files_path + "-Rmax-prob"), (policy_files_path + "-Rmax-count")
+        q_learning = policy_files_path + "-Q-learning"
+
+        if helper.is_file_exists(rmax_prob) and helper.is_file_exists(rmax_count):
+            self.actions_probs = helper.load_dict_from_file(rmax_prob)
+            self.actions_count = helper.load_dict_from_file(rmax_count)
+        else: self.init_RMax_dict()
+
+        if helper.is_file_exists(q_learning): self.data = helper.load_dict_from_file(q_learning)
+        else:
+            self.create_new_state_action_data("debug_state")
+            self.data['debug_state']['actions'] = {"some_action": 45}
 
     ##############################             PDDL  Methods               #################################
 
