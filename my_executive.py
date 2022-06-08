@@ -27,7 +27,9 @@ LAST_STATE = None
 LAST_ACTION = None
 CURRENT_STATE = None
 FULL_LAST_ACTION = None
+LAST_STATE_HASH = None
 COUNTER = 0
+DISTANCE_TO_CHECK = 10
 #########################################################################################################
 ###########################            General Agent - Learner              #############################
 #########################################################################################################
@@ -41,6 +43,8 @@ class GeneralLearnerAgent(Executor):
         self.actions_count, self.deterministic_act_dict, self.actions_probs = {}, {}, {}
         self.data = {}
         self.new_pddl = None
+        self.max_reward, self.uncompleted_goals = 0, 0
+        self.distance = DISTANCE_TO_CHECK
 
     def initialize(self, services):
         self.services = services
@@ -48,17 +52,18 @@ class GeneralLearnerAgent(Executor):
         self.read_policies_files()
 
         self.new_pddl = cu_parsr.PDDL(self.services.parser)
+        self.max_reward = self.uncompleted_goals = self.get_uncompleted_goals(self.services.goal_tracking.uncompleted_goals[0])
 
         pass
 
     ##########################             General Functions                #################################
     ##########################              Run Agent Run!                  #################################
     def next_action(self):
-        global LAST_ACTION, LAST_STATE, CURRENT_STATE, FULL_LAST_ACTION, COUNTER
+        global LAST_ACTION, LAST_STATE, CURRENT_STATE, FULL_LAST_ACTION, LAST_STATE_HASH, COUNTER
         CURRENT_STATE = self.services.perception.get_state()
-        last_state_hash, current_state_hash = helper.make_hash_sha256(LAST_STATE), helper.make_hash_sha256(CURRENT_STATE)
+        LAST_STATE_HASH, current_state_hash = helper.make_hash_sha256(LAST_STATE), helper.make_hash_sha256(CURRENT_STATE)
         chosen_action = None
-        self.update_Q_table(last_state_hash), self.update_RMax_dict()
+        self.update_Q_table(), self.update_RMax_dict()
         self.write_policies_files()
 
         r = np.random.uniform(0, 1)
@@ -73,6 +78,7 @@ class GeneralLearnerAgent(Executor):
             chosen_action = self.services.valid_actions.get()[0]
         elif r < self.epsilon:      # explore
             chosen_action = random.choice(valid_actions)
+         #   chosen_action = self.choose_curiosity_random(valid_actions)
         elif r >= self.epsilon:     # exploit
             chosen_action = self.choose_best_action(valid_actions, current_state_hash)
 
@@ -81,6 +87,7 @@ class GeneralLearnerAgent(Executor):
         FULL_LAST_ACTION = chosen_action
         COUNTER += 1
         return chosen_action
+      #  self.services.parser.apply_revealable_predicates(current_state)
 
     def write_policies_files(self):
         global policy_files_path
@@ -105,40 +112,55 @@ class GeneralLearnerAgent(Executor):
         return random.choice(best_action)
 
     #######################             Q-table  Methods               ################################
-    def create_new_state_action_data(self, key, action=None):
+    def create_new_state_action_data(self, key, action=None, visited=1):
         if action is not None:
-            self.data[key] = {'actions': {action: 0}, 'q-val': 0, 'visited': 1 }
-        else: self.data[key] = {'actions': {}, 'q-val': 0, 'visited': 1 }
+            self.data[key] = {'actions': {action: 0}, 'dist_from_goal': self.distance, "is_goal": 0, 'visited': visited }
+        else: self.data[key] = {'actions': {}, 'dist_from_goal': self.distance, "is_goal": 0, 'visited': visited }
 
     def feel_data(self, state_hash, valid_actions):
         if valid_actions is None: return
         for action in valid_actions:
             checked_act = action.split()[0].split('(')[1]
-            if state_hash not in self.data.keys(): self.create_new_state_action_data(state_hash, checked_act)
+            if state_hash not in self.data.keys(): self.create_new_state_action_data(state_hash, checked_act, visited=0)
             elif checked_act not in self.data[state_hash]["actions"].keys():
                 self.data[state_hash]["actions"][checked_act] = 0
 
 
-    def update_Q_table(self, hash_state):
+    def update_Q_table(self):
         global LAST_ACTION, LAST_STATE
+        if LAST_ACTION is None: return
+        if LAST_STATE_HASH not in self.data.keys():
+            self.create_new_state_action_data(LAST_STATE_HASH, action=LAST_ACTION)
 
-        if LAST_ACTION is None:
-            return
-        reward = self.get_reward()
-        if hash_state not in self.data.keys():
-            self.create_new_state_action_data(hash_state, LAST_ACTION)
+        if len(self.services.goal_tracking.uncompleted_goals) == 0:
+            reward = self.max_reward - 1    #################################     ########## NEED TO CHANGE
         else:
-            self.data[hash_state]["actions"][LAST_ACTION] = ((1 - self.alpha) * self.data[hash_state]["actions"][LAST_ACTION]) + (
-                self.alpha * (reward + self.gamma * np.max(self.data[hash_state]["actions"].values())))
+            uncompleted_goals_number = self.services.goal_tracking.uncompleted_goals[0]
+            reward = self.get_reward(uncompleted_goals_number)
+        print(reward)
+
+        self.data[LAST_STATE_HASH]["actions"][LAST_ACTION] = ((1 - self.alpha) * self.data[LAST_STATE_HASH]["actions"][LAST_ACTION]) + (
+            self.alpha * (reward + self.gamma * np.max(self.data[LAST_STATE_HASH]["actions"].values())))
         pass
 
     def change_epsilon(self):
-        if self.epsilon > 0.30:
+        if self.epsilon > 0.50:
             self.epsilon *= 0.95
 
-    def get_reward(self):
-            return 100
 
+    def choose_curiosity_random(self, valid_actions):
+        global CURRENT_STATE
+        best_action = []
+        for action in valid_actions:
+            action_name = action.split()[0].split('(')[1]
+            for deterministic_act in self.deterministic_act_dict[action_name]:
+                temp_state = copy.deepcopy(CURRENT_STATE)
+                cu_parsr.PDDL.apply_action_to_state(self.new_pddl, action, temp_state, deterministic_act, check_preconditions=False)
+                hash_state = helper.make_hash_sha256(CURRENT_STATE)
+                if hash_state not in self.data.keys():
+                    best_action.append(action)
+        if len(best_action) == 0:
+            return random.choice(valid_actions)
 
     #######################             R-Max  TABLE  Methods               ################################
     def init_RMax_dict(self):
@@ -195,6 +217,41 @@ class GeneralLearnerAgent(Executor):
         else:
             self.create_new_state_action_data("debug_state")
             self.data['debug_state']['actions'] = {"some_action": 45}
+
+
+    ######################             Reward Functions               ##############################
+
+    def get_uncompleted_goals(self, goal, reward=0.0):
+        if isinstance(goal, parsr_i.Literal):
+            return 1.0
+        if isinstance(goal, parsr_i.Conjunction):
+            for part_goal in goal.parts:
+                reward += self.get_uncompleted_goals(part_goal)
+        elif isinstance(goal, parsr_i.Disjunction):
+            max_reward = 0.0
+            for part_goal in goal.parts:
+                temp_reward = self.get_uncompleted_goals(part_goal)
+                if temp_reward > max_reward:
+                    max_reward = temp_reward
+            reward += max_reward
+        return reward
+
+    def get_reward(self, goal):
+        global LAST_STATE_HASH
+        uncompleted_goals_num = self.get_uncompleted_goals(goal)
+        self.check_if_found_goal(uncompleted_goals_num)
+        if self.data[LAST_STATE_HASH]["dist_from_goal"]:
+            return 10
+        else:
+        return self.max_reward - self.get_uncompleted_goals(goal) - 1
+
+    def check_if_found_goal(self, uncompleted_goals_num):
+        global LAST_STATE_HASH
+        if uncompleted_goals_num < self.uncompleted_goals:
+            self.uncompleted_goals = uncompleted_goals_num
+            self.data[LAST_STATE_HASH]["is_goal"] = True
+            return True
+        return False
 
     ##############################             PDDL  Methods               #################################
 
