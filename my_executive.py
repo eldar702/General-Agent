@@ -61,7 +61,8 @@ class GeneralLearnerAgent(Executor):
     def next_action(self):
         self.actions_in_new_round()
 
-        if self.services.goal_tracking.reached_all_goals() and helper.minute_passed(0.1, TIMER): return None
+        if self.services.goal_tracking.reached_all_goals() and helper.minute_passed(0.1, TIMER):
+            return None
         chosen_action = self.state_machines()
         self.actions_in_end_round(chosen_action)
         return chosen_action
@@ -69,15 +70,17 @@ class GeneralLearnerAgent(Executor):
 
       ##########################              General Func                  ###################
     def state_machines(self):
-        global LAST_STATE_HASH, CURRENT_STATE_HASH
+        global LAST_STATE_HASH, CURRENT_STATE_HASH, COUNTER
         valid_actions = self.services.valid_actions.get()
         self.feel_data(CURRENT_STATE_HASH, valid_actions)
         if len(valid_actions) == 0: return None
         elif len(valid_actions) == 1:
             chosen_action = self.services.valid_actions.get()[0]
         if self.state_machine == "stupid_learner":
-           # chosen_action = self.choose_curiosity_random(valid_actions)
-            chosen_action = random.choice(valid_actions)
+            if COUNTER % 3:
+                chosen_action = self.choose_curiosity_random(valid_actions)
+            else:
+                chosen_action = random.choice(valid_actions)
 
         elif self.state_machine == "smart_learner":
             pass
@@ -99,6 +102,7 @@ class GeneralLearnerAgent(Executor):
         self.last_action = chosen_action.split()[0].split('(')[1]
         COUNTER += 1
         pass
+    
     def write_policies_files(self):
         global policy_files_path
         helper.is_directory_exists(policy_files_folder_path)
@@ -152,15 +156,18 @@ class GeneralLearnerAgent(Executor):
         best_action = []
         for action in valid_actions:
             action_name = action.split()[0].split('(')[1]
-            for deterministic_act in self.deterministic_act_dict[action_name]:
+            for deterministic_act in self.deterministic_act_dict[action_name].values():
+                if deterministic_act == "stay_in_place": continue
                 temp_state = copy.deepcopy(self.current_state)
                 cu_parsr.PDDL.apply_action_to_state(self.new_pddl, action, temp_state, deterministic_act, check_preconditions=False)
-                hash_state = helper.make_hash_sha256(self.current_state)
-                if hash_state not in self.data.keys():
-                    best_action.append(action)
+                hash_state = helper.make_hash_sha256(temp_state)
+                if hash_state not in self.data.keys() or self.data[hash_state]["visited"] == 0:
+                    if action not in best_action:
+                        best_action.append(action)
         if len(best_action) == 0:
             return random.choice(valid_actions)
-
+        else:
+            return random.choice(best_action)
     #######################             Q-table  Methods               ################################
     def update_Q_table(self):
         global LAST_STATE_HASH, FOUND_ALL_GOALS
